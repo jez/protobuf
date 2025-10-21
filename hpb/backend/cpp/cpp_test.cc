@@ -15,11 +15,14 @@ namespace hpb::testing {
 namespace {
 
 using ::hpb_unittest::protos::TestModel;
+using ::hpb_unittest::protos::TestModel_Category_IMAGES;
 
 TEST(CppBackend, CanCreateMessage) {
   hpb::Arena arena;
   hpb::Ptr<TestModel> test_model_ptr = hpb::CreateMessage<TestModel>(arena);
   (void)test_model_ptr;
 }
+
+TEST(CppBackend, MessageEnums) { EXPECT_EQ(5, TestModel_Category_IMAGES); }
 }  // namespace
 }  // namespace hpb::testing
