@@ -21,6 +21,7 @@
 #include "absl/container/flat_hash_map.h"
 #include "absl/log/absl_check.h"
 #include "absl/strings/string_view.h"
+#include "absl/synchronization/mutex.h"
 #include "google/protobuf/descriptor.h"
 #include "google/protobuf/dynamic_message.h"
 #include "google/protobuf/internal_feature_helper.h"
@@ -77,6 +78,10 @@ namespace python {
 // This is enough to support the "is" operator on live objects.
 // All descriptors are stored here.
 std::unordered_map<const void*, PyObject*>* interned_descriptors;
+
+// Mutex to protect interned_descriptors from concurrent access in
+// free-threading Python builds.
+absl::Mutex* interned_descriptors_mutex;
 
 PyObject* PyString_FromCppString(absl::string_view str) {
   return PyUnicode_FromStringAndSize(str.data(),
@@ -399,12 +404,20 @@ PyObject* NewInternedDescriptor(PyTypeObject* type,
   }
 
   // See if the object is in the map of interned descriptors
-  std::unordered_map<const void*, PyObject*>::iterator it =
-      interned_descriptors->find(descriptor);
-  if (it != interned_descriptors->end()) {
-    ABSL_DCHECK(Py_TYPE(it->second) == type);
-    Py_INCREF(it->second);
-    return it->second;
+  PyObject* existing = nullptr;
+  {
+    absl::MutexLock lock(interned_descriptors_mutex);
+    std::unordered_map<const void*, PyObject*>::iterator it =
+        interned_descriptors->find(descriptor);
+    if (it != interned_descriptors->end()) {
+      ABSL_DCHECK(Py_TYPE(it->second) == type);
+      existing = it->second;
+    }
+  }
+  // Py_INCREF must be called outside the lock to avoid deadlock
+  if (existing != nullptr) {
+    Py_INCREF(existing);
+    return existing;
   }
   // Create a new descriptor object
   PyBaseDescriptor* py_descriptor = PyObject_GC_New(PyBaseDescriptor, type);
@@ -414,8 +427,11 @@ PyObject* NewInternedDescriptor(PyTypeObject* type,
   py_descriptor->descriptor = descriptor;
 
   // and cache it.
-  interned_descriptors->insert(
-      std::make_pair(descriptor, reinterpret_cast<PyObject*>(py_descriptor)));
+  {
+    absl::MutexLock lock(interned_descriptors_mutex);
+    interned_descriptors->insert(
+        std::make_pair(descriptor, reinterpret_cast<PyObject*>(py_descriptor)));
+  }
 
   // Ensures that the DescriptorPool stays alive.
   PyDescriptorPool* pool =
@@ -439,7 +455,10 @@ PyObject* NewInternedDescriptor(PyTypeObject* type,
 static void Dealloc(PyObject* pself) {
   PyBaseDescriptor* self = reinterpret_cast<PyBaseDescriptor*>(pself);
   // Remove from interned dictionary
-  interned_descriptors->erase(self->descriptor);
+  {
+    absl::MutexLock lock(interned_descriptors_mutex);
+    interned_descriptors->erase(self->descriptor);
+  }
   Py_CLEAR(self->pool);
   PyObject_GC_UnTrack(pself);
   Py_TYPE(self)->tp_free(pself);
@@ -2130,6 +2149,7 @@ bool InitDescriptor() {
 
   // Initialize globals defined in this file.
   interned_descriptors = new std::unordered_map<const void*, PyObject*>;
+  interned_descriptors_mutex = new absl::Mutex;
 
   return true;
 }
