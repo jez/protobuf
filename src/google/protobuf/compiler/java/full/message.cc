@@ -1059,12 +1059,10 @@ void ImmutableMessageGenerator::GenerateEqualsAndHashCode(
       "}\n"
       "int hash = 41;\n");
 
-  // If we output a getDescriptor() method, use that as it is more efficient.
-  if (descriptor_->options().no_standard_descriptor_accessor()) {
-    printer->Print("hash = (19 * hash) + getDescriptorForType().hashCode();\n");
-  } else {
-    printer->Print("hash = (19 * hash) + getDescriptor().hashCode();\n");
-  }
+  // Avoid static init of the descriptor just for the hashcode.
+  printer->Print("hash = (19 * hash) + " +
+                 name_resolver_->GetDescriptorClassName(descriptor_->file()) +
+                 ".getDescriptor().hashCode();\n");
 
   // hashCode non-oneofs.
   for (int i = 0; i < descriptor_->field_count(); i++) {
